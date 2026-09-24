@@ -18,15 +18,24 @@ const httpsUrl = z.string().url().max(2000).refine(u => {
   return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
 }, 'must be https (or http://localhost), without a #fragment');
 
-const clientShape = z.object({
+// Field rules shared by create and update. Defaults live only on create, so a
+// PATCH that changes one thing (e.g. disabled) can't reset the others.
+const clientFields = {
   name: z.string().trim().min(1).max(80),
   redirect_uris: z.array(httpsUrl).min(1).max(20),
-  post_logout_redirect_uris: z.array(httpsUrl).max(20).default([]),
-  scopes: z.array(z.enum(Object.keys(SCOPES))).min(1).default(['openid', 'profile', 'email', 'offline_access']),
-  first_party: z.boolean().default(false),
+  post_logout_redirect_uris: z.array(httpsUrl).max(20),
+  scopes: z.array(z.enum(Object.keys(SCOPES))).min(1),
+  first_party: z.boolean(),
   homepage_url: httpsUrl.nullable().optional(),
+};
+const createClient = z.object({
+  ...clientFields,
+  post_logout_redirect_uris: clientFields.post_logout_redirect_uris.default([]),
+  scopes: clientFields.scopes.default(['openid', 'profile', 'email', 'offline_access']),
+  first_party: clientFields.first_party.default(false),
   confidential: z.boolean().default(true),
 });
+const updateClient = z.object(clientFields).partial().extend({ disabled: z.boolean().optional() }).strict();
 
 async function guard(request, reply) {
   const header = request.headers.authorization;
@@ -222,7 +231,7 @@ export async function adminRoutes(app) {
   });
 
   app.post('/admin/v1/clients', async (request, reply) => {
-    const body = clientShape.parse(request.body);
+    const body = createClient.parse(request.body);
     const id = `${body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'app'}-${random(6).toLowerCase().replace(/[^a-z0-9]/g, 'x')}`;
     const secret = body.confidential ? newClientSecret() : null;
     const row = await one(`INSERT INTO clients (id, name, secret_hash, redirect_uris, post_logout_redirect_uris, scopes, first_party, homepage_url)
@@ -235,7 +244,7 @@ export async function adminRoutes(app) {
 
   app.patch('/admin/v1/clients/:id', async request => {
     const id = z.string().max(100).parse(request.params.id);
-    const body = clientShape.omit({ confidential: true }).partial().extend({ disabled: z.boolean().optional() }).strict().parse(request.body);
+    const body = updateClient.parse(request.body);
     const sets = [], params = [id];
     for (const [k, v] of Object.entries(body)) {
       if (k === 'disabled') { sets.push(`disabled_at = ${v ? 'coalesce(disabled_at, now())' : 'NULL'}`); continue; }
