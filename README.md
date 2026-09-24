@@ -13,7 +13,7 @@ Server-rendered HTML with no client JS. Styles come from `css.deltavdevs.com`.
 
 ## Signing a site in with Ward
 
-1. In Telescreen, go to **Ward → Apps → Register app**. Add the site's exact callback URL(s) and tick **first-party** for our own sites, which skips the consent screen. Copy the `client_secret`; it's shown once.
+1. In Telescreen, go to **Ward → Apps → Register app**. Add the site's exact callback URL(s) and tick **first-party** for our own sites, which marks them "Official DeltaVDevs app" on the consent screen. Every sign-in still shows that screen, so opening a link never signs anyone in by itself. Copy the `client_secret`; it's shown once.
 2. Point the site at the discovery document: `https://ward.deltavdevs.com/.well-known/openid-configuration`.
 3. Send people to `/oauth/authorize` with:
    - `response_type=code`, `client_id`, `redirect_uri`, `state`;

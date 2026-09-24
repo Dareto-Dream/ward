@@ -11,11 +11,12 @@ import { audit } from '../audit.js';
 //  - redirect URIs match exactly, never by prefix
 //  - codes are single-use; replaying one revokes everything it issued
 //  - refresh tokens rotate; replaying an old one revokes the whole family
+// What each scope actually hands over, in the words the consent screen uses.
 export const SCOPES = {
-  openid: 'Confirm who you are',
-  profile: 'Your name, username and avatar',
+  openid: 'Know it’s you (your Ward account ID)',
+  profile: 'Your username and public profile (display name and picture)',
   email: 'Your email address',
-  offline_access: 'Stay signed in when you’re away',
+  offline_access: 'Stay connected while you’re away',
 };
 const CODE_SECONDS = 120;
 const VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
@@ -79,21 +80,33 @@ async function issueCode(reply, user, v) {
 function consentPage(request, reply, user, v, raw) {
   const fields = pick(raw);
   const origin = new URL(v.redirectUri).origin;
+  const csrf = csrfToken(request, reply);
+  // "Not you?" signs out and comes straight back here to pick another account.
+  const here = `/oauth/authorize?${new URLSearchParams(pick(raw, ['prompt', 'max_age']))}`;
   return send(reply, 200, {
-    title: `Sign in to ${v.client.name}`,
-    user: { ...user, csrf: csrfToken(request, reply) },
-    body: html`<section class="card narrow">
+    title: `Authorize ${v.client.name}`,
+    user: { ...user, csrf },
+    body: html`<section class="card narrow consent">
       <p class="eyebrow">sign in with ward</p>
-      <h1 class="headline">${v.client.name} wants to use your Ward account</h1>
-      <p class="caption">Signed in as <strong>${user.display_name}</strong> (@${user.username}). You’ll go back to <code>${origin}</code>.</p>
-      <ul class="scopes">${v.scopes.map(s => html`<li>${SCOPES[s]}</li>`)}</ul>
-      <form method="post" action="/oauth/authorize" class="row end">
-        ${csrfField(csrfToken(request, reply))}
+      <h1 class="headline"><span class="app-name">${v.client.name}</span> wants to access your Ward account</h1>
+      ${v.client.first_party ? html`<p class="caption official">✓ Official DeltaVDevs app</p>` : html`<p class="caption">Only continue if you trust this app.</p>`}
+      <div class="who">
+        ${user.avatar_url ? html`<img class="who-avatar" src="${user.avatar_url}" alt="" referrerpolicy="no-referrer" />` : html`<span class="who-avatar blank">${user.display_name.slice(0, 1).toUpperCase()}</span>`}
+        <div class="who-text"><strong>${user.display_name}</strong><span class="caption">@${user.username}${user.email ? ` · ${user.email}` : ''}</span></div>
+        <form method="post" action="/logout" class="who-switch">${csrfField(csrf)}<input type="hidden" name="return_to" value="${here}" /><button class="linkish" type="submit">Not you?</button></form>
+      </div>
+      <div>
+        <p class="caption">${v.client.name} will be able to see:</p>
+        <ul class="scopes">${v.scopes.map(s => html`<li>${SCOPES[s]}</li>`)}</ul>
+        <p class="caption">It won’t get your password, your 2FA, or your other connected apps.</p>
+      </div>
+      <form method="post" action="/oauth/authorize" class="consent-actions">
+        ${csrfField(csrf)}
         ${Object.entries(fields).map(([k, val]) => html`<input type="hidden" name="${k}" value="${val}" />`)}
-        <button class="outline" type="submit" name="decision" value="deny">Cancel</button>
-        <button class="cta" type="submit" name="decision" value="allow">Allow</button>
+        <button class="outline" type="submit" name="decision" value="deny">Take me back</button>
+        <button class="cta" type="submit" name="decision" value="allow">Authorize</button>
       </form>
-      <p class="caption">${v.client.name} uses this under its own policies. See <a href="/privacy">Ward’s Privacy Policy</a>. You can disconnect it any time from <a href="/account#apps">your account</a>.</p>
+      <p class="caption">You’ll go back to <code>${origin}</code>. ${v.client.name} uses this under its own policies; see <a href="/privacy">Ward’s Privacy Policy</a>. You can disconnect it any time from <a href="/account#apps">your account</a>.</p>
     </section>`,
   });
 }
@@ -219,13 +232,15 @@ export async function oauthRoutes(app) {
       if (v.prompt.includes('none')) return reply.redirect(v.fail('login_required').redirect);
       return reply.redirect(`/login?reauth=1&return_to=${encodeURIComponent(here)}`);
     }
-    const grant = await one('SELECT scopes FROM grants WHERE user_id = $1 AND client_id = $2', [user.id, v.client.id]);
-    const covered = grant && v.scopes.every(s => grant.scopes.includes(s));
-    if (v.client.first_party || (covered && !v.prompt.includes('consent'))) {
-      if (!covered) await query('INSERT INTO grants (user_id, client_id, scopes) VALUES ($1, $2, $3) ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = ARRAY(SELECT DISTINCT unnest(grants.scopes || EXCLUDED.scopes))', [user.id, v.client.id, v.scopes]);
-      return issueCode(reply, user, v);
+    // Never sign someone into an app just because a link was opened: an
+    // interactive request always shows the consent screen, first-party or not.
+    // The only silent path is prompt=none, and only for scopes the person has
+    // already approved for this exact app; it never creates new consent.
+    if (v.prompt.includes('none')) {
+      const grant = await one('SELECT scopes FROM grants WHERE user_id = $1 AND client_id = $2', [user.id, v.client.id]);
+      if (grant && v.scopes.every(s => grant.scopes.includes(s))) return issueCode(reply, user, v);
+      return reply.redirect(v.fail('consent_required').redirect);
     }
-    if (v.prompt.includes('none')) return reply.redirect(v.fail('consent_required').redirect);
     return consentPage(request, reply, user, v, request.query);
   });
 

@@ -49,6 +49,16 @@ function authorizeUrl(client, extra = {}) {
 
 const codeFrom = location => new URL(location).searchParams.get('code');
 
+// Load the consent screen for `url` and press Authorize (or Take me back).
+async function decide(b, url, decision = 'allow') {
+  const page = await b.get(url);
+  assert.equal(page.statusCode, 200, 'every interactive authorize shows the consent screen');
+  const form = page.body.slice(page.body.indexOf('action="/oauth/authorize"'));
+  const fields = Object.fromEntries([...form.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g)].map(m => [m[1], m[2].replace(/&amp;/g, '&')]));
+  return b.post('/oauth/authorize', { ...fields, decision });
+}
+const approve = async (b, url) => (await decide(b, url)).headers.location;
+
 function verifyJwt(jwt, jwks) {
   const [h, p, s] = jwt.split('.');
   const header = JSON.parse(Buffer.from(h, 'base64url'));
@@ -117,11 +127,7 @@ test('full oauth flow: consent, code, pkce, id token, userinfo, refresh rotation
   const { b } = await login('alice@example.com');
   const { url, verifier } = authorizeUrl(client);
 
-  const consent = await b.get(url);
-  assert.equal(consent.statusCode, 200);
-  assert.match(consent.body, /Blog wants to use your Ward account/);
-  const fields = Object.fromEntries([...consent.body.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g)].map(m => [m[1], m[2].replace(/&amp;/g, '&')]));
-  const allowed = await b.post('/oauth/authorize', { ...fields, decision: 'allow' });
+  const allowed = await decide(b, url);
   assert.equal(allowed.statusCode, 302);
   const back = new URL(allowed.headers.location);
   assert.equal(back.origin + back.pathname, 'https://blog.example.com/callback');
@@ -134,10 +140,8 @@ test('full oauth flow: consent, code, pkce, id token, userinfo, refresh rotation
   assert.equal(wrongVerifier.json().error, 'invalid_grant', 'a bad verifier fails and burns the code');
 
   // Fresh code, this time done right.
-  const again = await b.get(authorizeUrl(client).url); // consent is remembered now
-  assert.equal(again.statusCode, 302);
   const second = authorizeUrl(client);
-  const code2 = codeFrom((await b.get(second.url)).headers.location);
+  const code2 = codeFrom(await approve(b, second.url));
   const tokenRes = await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: code2, redirect_uri: 'https://blog.example.com/callback', code_verifier: second.verifier }, { authorization: basic }) });
   assert.equal(tokenRes.statusCode, 200, tokenRes.body);
   assert.equal(tokenRes.headers['cache-control'], 'no-store');
@@ -164,7 +168,7 @@ test('full oauth flow: consent, code, pkce, id token, userinfo, refresh rotation
 
   // New chain for the refresh test.
   const third = authorizeUrl(client);
-  const t = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom((await b.get(third.url)).headers.location), redirect_uri: 'https://blog.example.com/callback', code_verifier: third.verifier, client_id: client.id, client_secret }) })).json();
+  const t = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom(await approve(b, third.url)), redirect_uri: 'https://blog.example.com/callback', code_verifier: third.verifier, client_id: client.id, client_secret }) })).json();
   const r1 = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'refresh_token', refresh_token: t.refresh_token }, { authorization: basic }) })).json();
   assert.ok(r1.refresh_token && r1.refresh_token !== t.refresh_token, 'refresh rotates');
   const reuse = await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'refresh_token', refresh_token: t.refresh_token }, { authorization: basic }) });
@@ -189,13 +193,27 @@ test('authorize refuses bad redirects and missing pkce', { skip }, async () => {
   assert.equal(new URL(anon.headers.location).searchParams.get('error'), 'login_required');
 });
 
-test('first-party clients skip consent; token endpoint rejects bad secrets', { skip }, async () => {
+test('opening an authorize link never signs you in by itself, even for our own apps', { skip }, async () => {
   const { client } = await makeClient({ name: 'SynthCity', first_party: true });
   const { b } = await login('alice@example.com');
-  const { url } = authorizeUrl(client);
-  const res = await b.get(url);
-  assert.equal(res.statusCode, 302);
-  assert.ok(codeFrom(res.headers.location));
+  for (let i = 0; i < 2; i++) {
+    const page = await b.get(authorizeUrl(client).url);
+    assert.equal(page.statusCode, 200, `visit ${i + 1}: consent screen, not a redirect with a code`);
+    assert.equal(page.headers.location, undefined);
+    assert.match(page.body, /SynthCity<\/span> wants to access your Ward account/);
+    assert.match(page.body, /Official DeltaVDevs app/);
+    assert.match(page.body, /Your username and public profile/);
+    assert.match(page.body, /@alice/, 'shows which account is signed in');
+    assert.match(page.body, /Not you\?/);
+    assert.match(page.body, />Authorize</);
+    assert.match(page.body, />Take me back</);
+    if (i === 0) assert.ok(codeFrom(await approve(b, authorizeUrl(client).url)));
+  }
+  // Silent re-auth only when the app asks for it and the person already said yes.
+  assert.ok(codeFrom((await b.get(authorizeUrl(client, { prompt: 'none' }).url)).headers.location));
+  const other = (await makeClient({ name: 'Never approved' })).client;
+  const silent = await b.get(authorizeUrl(other, { prompt: 'none' }).url);
+  assert.equal(new URL(silent.headers.location).searchParams.get('error'), 'consent_required');
   const wrong = await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: 'x', code_verifier: pkce().verifier, client_id: client.id, client_secret: 'nope' }) });
   assert.equal(wrong.statusCode, 401);
 });
@@ -240,7 +258,7 @@ test('admin api: auth, search, suspend kills sessions and tokens', { skip }, asy
   const { client, client_secret } = await makeClient({ name: 'Suspend test', first_party: true });
   const { b } = await login('alice@example.com');
   const flow = authorizeUrl(client);
-  const t = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom((await b.get(flow.url)).headers.location), redirect_uri: 'https://blog.example.com/callback', code_verifier: flow.verifier, client_id: client.id, client_secret }) })).json();
+  const t = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom(await approve(b, flow.url)), redirect_uri: 'https://blog.example.com/callback', code_verifier: flow.verifier, client_id: client.id, client_secret }) })).json();
 
   const s = await app.inject({ method: 'POST', url: `/admin/v1/users/${alice.id}/suspend`, headers: ADMIN, payload: { reason: 'testing' } });
   assert.equal(s.statusCode, 200);
@@ -339,4 +357,26 @@ test('social sign-up never merges into an existing account by email', { skip }, 
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('consent screen: take me back and not you', { skip }, async () => {
+  const { client } = await makeClient({ name: 'Blog again' });
+  const { b } = await login('alice@example.com');
+  const denied = await decide(b, authorizeUrl(client).url, 'deny');
+  const back = new URL(denied.headers.location);
+  assert.equal(back.origin + back.pathname, 'https://blog.example.com/callback');
+  assert.equal(back.searchParams.get('error'), 'access_denied');
+  assert.equal(back.searchParams.get('code'), null);
+
+  // Not you? signs out and comes back to the same authorize request after login.
+  const { url } = authorizeUrl(client);
+  const page = await b.get(url);
+  const csrf = page.body.match(/name="_csrf" value="([^"]+)"/)[1];
+  const returnTo = page.body.match(/name="return_to" value="([^"]+)"/)[1].replace(/&amp;/g, '&');
+  assert.ok(returnTo.startsWith('/oauth/authorize?'));
+  const out = await b.post('/logout', { _csrf: csrf, return_to: returnTo });
+  assert.equal(out.headers.location, `/login?return_to=${encodeURIComponent(returnTo)}`);
+  assert.equal((await b.get('/account')).statusCode, 302, 'signed out');
+  const evil = await b.post('/logout', { _csrf: await b.csrf(), return_to: 'https://evil.example' });
+  assert.equal(evil.headers.location, '/login?return_to=%2Faccount', 'return_to stays on Ward');
 });

@@ -407,6 +407,9 @@ export async function loginRoutes(app) {
     const user = await loadSession(request);
     await endSession(request, reply);
     if (user) await audit(request, 'logout', { userId: user.id, actor: `user:${user.id}` });
+    // "Not you?" on the consent screen: sign out, then sign in again and carry on.
+    const returnTo = field(request.body, 'return_to', 4000);
+    if (returnTo) return reply.redirect(`/login?return_to=${encodeURIComponent(safeReturn(returnTo))}`);
     return reply.redirect('/login?notice=signed_out');
   });
 }

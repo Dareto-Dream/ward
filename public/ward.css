@@ -82,3 +82,17 @@ details summary { cursor: pointer; }
 .legal p { margin: 0 0 var(--spacing-2); color: var(--snow); }
 .legal nav a[aria-current] { color: var(--primary); }
 .wrap:has(.legal) { max-width: 760px; }
+
+/* ---------- consent ---------- */
+.consent .app-name { color: var(--primary); }
+.consent .official { color: var(--green); margin-top: calc(-1 * var(--spacing-1)); }
+.who { display: flex; align-items: center; gap: var(--spacing-2); padding: .75rem 1rem; border: 1px solid var(--steel); border-radius: var(--radii-default); background: var(--darkless); }
+.who-avatar { width: 40px; height: 40px; border-radius: var(--radii-full); object-fit: cover; flex: 0 0 auto; }
+.who-avatar.blank { display: grid; place-items: center; background: var(--sunken); color: var(--primary); font-weight: var(--font-weight-bold); }
+.who-text { display: grid; min-width: 0; flex: 1; }
+.who-text .caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-switch { margin: 0; }
+button.linkish { background: none; border: 0; padding: 0; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; font-size: var(--font-2); cursor: pointer; }
+.consent-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-1); }
+.card.narrow > * { min-width: 0; }
+.wrap { min-width: 0; box-sizing: border-box; }
