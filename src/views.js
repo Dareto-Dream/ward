@@ -37,7 +37,7 @@ export function page({ title, body, user = null, wide = false }) {
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="${user ? '/account' : '/login'}"><span class="brand-mark">◈</span> Ward</a>
+    <a class="brand" href="${user ? '/account' : '/login'}"><img class="brand-logo" src="/favicon.svg" alt="" width="32" height="32" /> Ward</a>
     ${user ? html`<form method="post" action="/logout" class="top-out"><input type="hidden" name="_csrf" value="${user.csrf}" /><span class="caption">${user.display_name}</span><button class="outline small" type="submit">Sign out</button></form>` : ''}
   </header>
   <main class="${wide ? 'wrap wide' : 'wrap'}">${body}</main>
