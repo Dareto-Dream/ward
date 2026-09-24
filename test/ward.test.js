@@ -380,3 +380,46 @@ test('consent screen: take me back and not you', { skip }, async () => {
   const evil = await b.post('/logout', { _csrf: await b.csrf(), return_to: 'https://evil.example' });
   assert.equal(evil.headers.location, '/login?return_to=%2Faccount', 'return_to stays on Ward');
 });
+
+test('deltatime scope: consent says so, and only DeltaTime can check those tokens', { skip }, async () => {
+  const synth = await makeClient({ name: 'SynthCity DT', first_party: true, scopes: ['openid', 'profile', 'deltatime', 'offline_access'] });
+  const plain = await makeClient({ name: 'No stats app' });
+  const deltatime = await makeClient({ name: 'DeltaTime RS', redirect_uris: ['https://deltatime.example.com/auth/ward/callback'], resource_scopes: ['deltatime'] });
+  assert.deepEqual(deltatime.client.resource_scopes, ['deltatime']);
+  const { b } = await login('alice@example.com');
+
+  const flow = authorizeUrl(synth.client, { scope: 'openid profile deltatime offline_access' });
+  assert.match((await b.get(flow.url)).body, /Your DeltaTime statistics and hours/);
+  const tokens = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom(await approve(b, flow.url)), redirect_uri: 'https://blog.example.com/callback', code_verifier: flow.verifier, client_id: synth.client.id, client_secret: synth.client_secret }) })).json();
+  assert.equal(tokens.scope, 'openid profile deltatime offline_access');
+
+  const introspect = (who, token) => app.inject({ method: 'POST', url: '/oauth/introspect', ...form({ token, client_id: who.client.id, client_secret: who.client_secret }) }).then(r => r.json());
+  const seen = await introspect(deltatime, tokens.access_token);
+  assert.equal(seen.active, true, 'DeltaTime can verify a token issued to SynthCity');
+  assert.equal(seen.scope, 'deltatime', 'but only sees the scope it serves');
+  assert.equal(seen.client_id, synth.client.id);
+  assert.ok(seen.sub);
+  assert.equal((await introspect(plain, tokens.access_token)).active, false, 'other apps cannot');
+  assert.equal((await introspect(deltatime, tokens.refresh_token)).active, false, 'never refresh tokens');
+
+  // A token without the scope is invisible to DeltaTime.
+  const noStats = authorizeUrl(plain.client, { scope: 'openid profile' });
+  const t2 = (await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom(await approve(b, noStats.url)), redirect_uri: 'https://blog.example.com/callback', code_verifier: noStats.verifier, client_id: plain.client.id, client_secret: plain.client_secret }) })).json();
+  assert.equal((await introspect(deltatime, t2.access_token)).active, false);
+
+  // An app that isn't allowed the scope can't even ask for it.
+  const denied = await b.get(authorizeUrl(plain.client, { scope: 'openid deltatime' }).url);
+  assert.equal(new URL(denied.headers.location).searchParams.get('error'), 'invalid_scope');
+});
+
+test('editing one thing on an app leaves the rest alone', { skip }, async () => {
+  const { client } = await makeClient({ name: 'Keep me', first_party: true, scopes: ['openid', 'deltatime'], resource_scopes: ['deltatime'] });
+  const r = await app.inject({ method: 'PATCH', url: `/admin/v1/clients/${client.id}`, headers: ADMIN, payload: { disabled: true } });
+  assert.equal(r.statusCode, 200, r.body);
+  const after = r.json().client;
+  assert.ok(after.disabled_at);
+  assert.equal(after.first_party, true);
+  assert.deepEqual(after.scopes, ['openid', 'deltatime']);
+  assert.deepEqual(after.resource_scopes, ['deltatime']);
+  assert.deepEqual(after.post_logout_redirect_uris, ['https://blog.example.com/']);
+});

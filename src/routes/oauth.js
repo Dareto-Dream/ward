@@ -17,6 +17,8 @@ export const SCOPES = {
   profile: 'Your username and public profile (display name and picture)',
   email: 'Your email address',
   offline_access: 'Stay connected while you’re away',
+  // Read-only: DeltaTime accepts these tokens on its stats API (see resource_scopes).
+  deltatime: 'Your DeltaTime statistics and hours (read-only)',
 };
 const CODE_SECONDS = 120;
 const VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
@@ -353,9 +355,14 @@ export async function oauthRoutes(app) {
     const row = token ? await one(`SELECT t.*, u.username FROM tokens t JOIN users u ON u.id = t.user_id
       WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now() AND u.suspended_at IS NULL
         AND (t.kind = 'access' OR t.used_at IS NULL)`, [digest(token)]) : null;
-    if (!row || row.client_id !== client.id) return { active: false };
+    if (!row) return { active: false };
+    // Your own tokens, or — for a resource server like DeltaTime — another
+    // app's *access* token, seen only through the scopes you're responsible for.
+    const own = row.client_id === client.id;
+    const served = row.kind === 'access' ? (client.resource_scopes || []).filter(s => row.scopes.includes(s)) : [];
+    if (!own && !served.length) return { active: false };
     return {
-      active: true, scope: row.scopes.join(' '), client_id: row.client_id, sub: row.user_id, username: row.username,
+      active: true, scope: (own ? row.scopes : served).join(' '), client_id: row.client_id, sub: row.user_id, username: row.username,
       token_type: row.kind === 'access' ? 'Bearer' : 'refresh_token', iss: config.issuer,
       iat: Math.floor(new Date(row.created_at).getTime() / 1000), exp: Math.floor(new Date(row.expires_at).getTime() / 1000),
     };

@@ -27,12 +27,16 @@ const clientFields = {
   scopes: z.array(z.enum(Object.keys(SCOPES))).min(1),
   first_party: z.boolean(),
   homepage_url: httpsUrl.nullable().optional(),
+  // Scopes this app serves as a resource server: it may introspect other apps'
+  // access tokens carrying them. Only DeltaTime (`deltatime`) needs this.
+  resource_scopes: z.array(z.enum(Object.keys(SCOPES).filter(s => !['openid', 'offline_access'].includes(s)))).max(10),
 };
 const createClient = z.object({
   ...clientFields,
   post_logout_redirect_uris: clientFields.post_logout_redirect_uris.default([]),
   scopes: clientFields.scopes.default(['openid', 'profile', 'email', 'offline_access']),
   first_party: clientFields.first_party.default(false),
+  resource_scopes: clientFields.resource_scopes.default([]),
   confidential: z.boolean().default(true),
 });
 const updateClient = z.object(clientFields).partial().extend({ disabled: z.boolean().optional() }).strict();
@@ -234,9 +238,9 @@ export async function adminRoutes(app) {
     const body = createClient.parse(request.body);
     const id = `${body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'app'}-${random(6).toLowerCase().replace(/[^a-z0-9]/g, 'x')}`;
     const secret = body.confidential ? newClientSecret() : null;
-    const row = await one(`INSERT INTO clients (id, name, secret_hash, redirect_uris, post_logout_redirect_uris, scopes, first_party, homepage_url)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [id, body.name, secret ? digest(secret) : null, body.redirect_uris, body.post_logout_redirect_uris, body.scopes, body.first_party, body.homepage_url || null]);
+    const row = await one(`INSERT INTO clients (id, name, secret_hash, redirect_uris, post_logout_redirect_uris, scopes, first_party, homepage_url, resource_scopes)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [id, body.name, secret ? digest(secret) : null, body.redirect_uris, body.post_logout_redirect_uris, body.scopes, body.first_party, body.homepage_url || null, body.resource_scopes]);
     await audit(request, 'admin.client_created', { clientId: id, name: body.name, first_party: body.first_party });
     // The secret exists in plaintext exactly once: in this response.
     return reply.code(201).send({ client: publicClient(row), client_secret: secret });
