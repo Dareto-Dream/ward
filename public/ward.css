@@ -73,3 +73,11 @@ details summary { cursor: pointer; }
   .list li { flex-direction: column; align-items: flex-start; }
   .codes { columns: 1; }
 }
+
+.agree { display: flex; flex-direction: row; gap: .625rem; align-items: flex-start; font-weight: var(--font-weight-normal); font-size: var(--font-2); }
+.agree input { width: auto; margin-top: .2rem; accent-color: var(--primary); }
+.legal { line-height: 1.65; }
+.legal h2 { font-size: var(--font-4); margin: var(--spacing-3) 0 var(--spacing-1); }
+.legal p { margin: 0 0 var(--spacing-2); color: var(--snow); }
+.legal nav a[aria-current] { color: var(--primary); }
+.wrap:has(.legal) { max-width: 760px; }

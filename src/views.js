@@ -41,7 +41,7 @@ export function page({ title, body, user = null, wide = false }) {
     ${user ? html`<form method="post" action="/logout" class="top-out"><input type="hidden" name="_csrf" value="${user.csrf}" /><span class="caption">${user.display_name}</span><button class="outline small" type="submit">Sign out</button></form>` : ''}
   </header>
   <main class="${wide ? 'wrap wide' : 'wrap'}">${body}</main>
-  <footer class="foot caption">One account for every DeltaVDevs site · <a href="${config.publicUrl}/.well-known/openid-configuration">OIDC</a></footer>
+  <footer class="foot caption">One account for every DeltaVDevs site · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="${config.publicUrl}/.well-known/openid-configuration">OIDC</a></footer>
 </body>
 </html>`}`;
 }

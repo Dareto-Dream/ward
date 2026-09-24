@@ -8,9 +8,11 @@ import { normalizeEmail, validEmail, freeUsername, findByEmail, findById, passwo
 import { sendMail, templates } from '../mail.js';
 import * as totp from '../totp.js';
 import { audit } from '../audit.js';
+import { POLICY_VERSION, agreement, accepted } from '../legal.js';
 
 const MFA_COOKIE = config.production ? '__Host-ward-mfa' : 'ward-mfa';
 const OAUTH_COOKIE = config.production ? '__Host-ward-oauth' : 'ward-oauth';
+const SIGNUP_COOKIE = config.production ? '__Host-ward-signup' : 'ward-signup';
 
 const field = (body, name, max = 300) => (typeof body?.[name] === 'string' ? body[name].slice(0, max) : '');
 
@@ -137,6 +139,7 @@ export async function loginRoutes(app) {
       <label>Name <input name="display_name" value="${name}" maxlength="60" autocomplete="name" required /></label>
       <label>Email <input type="email" name="email" value="${email}" maxlength="254" autocomplete="email" required /></label>
       <label>Password <input type="password" name="password" minlength="10" maxlength="200" autocomplete="new-password" required /><span class="caption">10+ characters. Checked against known breaches.</span></label>
+      ${agreement}
       <button class="cta" type="submit">Send confirmation link</button>
     </form>
     <p class="caption">Already have one? <a href="/login">Sign in</a></p>`, status);
@@ -156,6 +159,7 @@ export async function loginRoutes(app) {
     if (!csrfOk(request)) return again('Your session expired. Try again.');
     if (!validEmail(email)) return again('That doesn’t look like an email address.');
     if (!name) return again('Tell us what to call you.');
+    if (!accepted(request.body)) return again('Agree to the Terms of Service and Privacy Policy to create an account.');
     if ((await limited(`register:ip:${request.ip}`, 10, 3600)) || (await limited(`register:email:${email}`, 3, 3600))) return again('Too many sign-ups from here. Try again in an hour.');
     const problem = await passwordProblem(password, { email });
     if (problem) return again(problem);
@@ -170,7 +174,7 @@ export async function loginRoutes(app) {
       await sendMail(request.log, { to: email, ...templates.alreadyRegistered(`${config.publicUrl}/reset?token=${token}`) });
     } else {
       await query("INSERT INTO email_tokens (token_hash, purpose, email, data, expires_at) VALUES ($1, 'register', $2, $3, now() + interval '1 hour')",
-        [digest(token), email, { password_hash: passwordHash, display_name: name, return_to: returnTo }]);
+        [digest(token), email, { password_hash: passwordHash, display_name: name, return_to: returnTo, policies: POLICY_VERSION }]);
       await sendMail(request.log, { to: email, ...templates.register(`${config.publicUrl}/verify?token=${token}`) });
     }
     return simplePage(reply, 'Check your inbox', html`<p>We sent a link to <strong>${email}</strong>. Click it within an hour to finish.</p><p class="caption">Nothing there? Check spam, or <a href="/register">try again</a>.</p>`);
@@ -197,8 +201,8 @@ export async function loginRoutes(app) {
       if (reg) {
         if ((await db.query('SELECT 1 FROM users WHERE email = $1', [reg.email])).rowCount) return { taken: true };
         const username = await freeUsername(db, reg.email.split('@')[0]);
-        const user = (await db.query('INSERT INTO users (email, username, display_name, password_hash, password_changed_at) VALUES ($1, $2, $3, $4, now()) RETURNING *',
-          [reg.email, username, reg.data.display_name, reg.data.password_hash])).rows[0];
+        const user = (await db.query(`INSERT INTO users (email, username, display_name, password_hash, password_changed_at, terms_version, privacy_version, policies_accepted_at)
+          VALUES ($1, $2, $3, $4, now(), $5, $5, $6) RETURNING *`, [reg.email, username, reg.data.display_name, reg.data.password_hash, reg.data.policies, reg.created_at])).rows[0];
         return { user, created: true, returnTo: reg.data.return_to };
       }
       const change = await takeToken(db, token, 'email');
@@ -359,16 +363,42 @@ export async function loginRoutes(app) {
       await audit(request, 'login.email_collision', { provider, actor: null });
       return bounce(`A Ward account already uses ${profile.email}. Sign in the way you usually do, then link ${PROVIDERS[provider]} from your account page.`, 409);
     }
+    // Nothing is created until they agree to the policies on /signup.
+    reply.setCookie(SIGNUP_COOKIE, seal('signup', { provider, profile, returnTo }, 600), { ...cookieOptions, maxAge: 600 });
+    return reply.redirect('/signup');
+  });
+
+  const signupPage = (request, reply, pending, error = null, status = 200) => simplePage(reply, 'One last thing', html`
+    <p>You’re creating a Ward account with <strong>${PROVIDERS[pending.provider]}</strong> as <strong>${pending.profile.name || pending.profile.handle || 'you'}</strong>${pending.profile.email ? html` (${pending.profile.email})` : ''}.</p>
+    ${notice(error)}
+    <form method="post" action="/signup" class="stack">${csrfField(csrfToken(request, reply))}${agreement}<button class="cta" type="submit">Create my account</button></form>
+    <p class="caption"><a href="/login">Cancel</a></p>`, status);
+
+  app.get('/signup', async (request, reply) => {
+    const pending = unseal('signup', request.cookies[SIGNUP_COOKIE]);
+    return pending ? signupPage(request, reply, pending) : reply.redirect('/login');
+  });
+
+  app.post('/signup', async (request, reply) => {
+    const pending = unseal('signup', request.cookies[SIGNUP_COOKIE]);
+    if (!pending || !PROVIDER_CONFIG[pending.provider]) return reply.redirect('/login');
+    if (!csrfOk(request)) return signupPage(request, reply, pending, 'That form expired. Try again.', 403);
+    if (!accepted(request.body)) return signupPage(request, reply, pending, 'Agree to the Terms of Service and Privacy Policy to continue.', 400);
+    const { provider, profile } = pending;
+    const returnTo = safeReturn(pending.returnTo);
     const user = await transaction(async db => {
+      if ((await db.query('SELECT 1 FROM identities WHERE provider = $1 AND subject = $2', [provider, profile.subject])).rowCount) return null;
+      if (profile.email && (await db.query('SELECT 1 FROM users WHERE email = $1', [profile.email])).rowCount) return null;
       const username = await freeUsername(db, profile.handle, profile.name, profile.email?.split('@')[0]);
-      const created = (await db.query('INSERT INTO users (email, username, display_name, avatar_url) VALUES ($1, $2, $3, $4) RETURNING *',
-        [profile.email, username, (profile.name || profile.handle || username).slice(0, 60), profile.avatar])).rows[0];
+      const created = (await db.query(`INSERT INTO users (email, username, display_name, avatar_url, terms_version, privacy_version, policies_accepted_at)
+        VALUES ($1, $2, $3, $4, $5, $5, now()) RETURNING *`, [profile.email, username, (profile.name || profile.handle || username).slice(0, 60), profile.avatar, POLICY_VERSION])).rows[0];
       await db.query('INSERT INTO identities (user_id, provider, subject, email, handle, last_used_at) VALUES ($1, $2, $3, $4, $5, now())',
         [created.id, provider, profile.subject, profile.email, profile.handle]);
       return created;
     }).catch(err => (err.code === '23505' ? null : Promise.reject(err)));
-    if (!user) return bounce('That account was just registered. Try signing in again.', 409);
-    await audit(request, 'user.registered', { userId: user.id, actor: `user:${user.id}`, method: provider });
+    reply.clearCookie(SIGNUP_COOKIE, cookieOptions);
+    if (!user) return loginPage(request, reply, { error: 'That account already exists. Sign in the way you usually do.', returnTo, status: 409 });
+    await audit(request, 'user.registered', { userId: user.id, actor: `user:${user.id}`, method: provider, policies: POLICY_VERSION });
     return completeSignIn(request, reply, user, [provider], returnTo);
   });
 
