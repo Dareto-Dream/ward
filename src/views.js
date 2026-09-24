@@ -27,8 +27,8 @@ export function page({ title, body, user = null, wide = false }) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#14b8a6" />
-  <meta name="referrer" content="no-referrer" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="referrer" content="same-origin" />
   <title>${title ? `${title} · Ward` : 'Ward'}</title>
   <link rel="stylesheet" href="https://css.deltavdevs.com/theme.css" />
   <link rel="stylesheet" href="https://css.deltavdevs.com/fonts.css" />
