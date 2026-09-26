@@ -58,6 +58,7 @@ const userOr404 = async id => (await one('SELECT * FROM users WHERE id = $1', [u
 const publicUser = u => ({
   id: u.id, email: u.email, username: u.username, display_name: u.display_name, avatar_url: u.avatar_url,
   has_password: Boolean(u.password_hash), mfa: Boolean(u.totp_enabled_at), suspended_at: u.suspended_at, suspended_reason: u.suspended_reason,
+  admin_level: u.admin_level,
   created_at: u.created_at, updated_at: u.updated_at, last_login_at: u.last_login_at,
   terms_version: u.terms_version, privacy_version: u.privacy_version, policies_accepted_at: u.policies_accepted_at,
 });
@@ -138,6 +139,28 @@ export async function adminRoutes(app) {
       if (err.code === '23505') throw Object.assign(new Error('that username or email is already in use'), { statusCode: 409 });
       throw err;
     }
+  });
+
+  // Staff level. Telescreen only lets owners call this; Ward records who did it.
+  // A change signs the person out of admin tools so it applies right away.
+  app.post('/admin/v1/users/:id/admin-level', async request => {
+    const user = await userOr404(request.params.id);
+    const { level } = z.object({ level: z.enum(['viewer', 'admin', 'owner']).nullable() }).strict().parse(request.body);
+    if (level === user.admin_level) return { user: publicUser(user) };
+    const updated = await transaction(async db => {
+      // Serialize level changes so two demotions can't both see "another owner left".
+      await db.query("SELECT pg_advisory_xact_lock(hashtext('ward.admin_level'))");
+      if (user.admin_level === 'owner' && level !== 'owner') {
+        const others = (await db.query("SELECT count(*)::int AS n FROM users WHERE admin_level = 'owner' AND id <> $1 AND suspended_at IS NULL", [user.id])).rows[0].n;
+        if (!others) throw Object.assign(new Error('that is the last owner; make someone else owner first'), { statusCode: 409 });
+      }
+      const row = (await db.query('UPDATE users SET admin_level = $2, updated_at = now() WHERE id = $1 RETURNING *', [user.id, level])).rows[0];
+      await db.query(`UPDATE tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+        AND client_id IN (SELECT id FROM clients WHERE 'admin' = ANY(scopes))`, [user.id]);
+      return row;
+    });
+    await audit(request, 'admin.level_changed', { userId: user.id, before: user.admin_level, after: level });
+    return { user: publicUser(updated) };
   });
 
   app.post('/admin/v1/users/:id/suspend', async request => {

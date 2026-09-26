@@ -19,6 +19,8 @@ export const SCOPES = {
   offline_access: 'Stay connected while you’re away',
   // Read-only: DeltaTime accepts these tokens on its stats API (see resource_scopes).
   deltatime: 'Your DeltaTime statistics and hours (read-only)',
+  // Only admin tools (Telescreen, Analytics) are allowed this scope.
+  admin: 'Your DeltaVDevs staff level',
 };
 const CODE_SECONDS = 120;
 const VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
@@ -144,6 +146,8 @@ export function claims(user, scopes) {
   const out = { sub: user.id };
   if (scopes.includes('profile')) Object.assign(out, { name: user.display_name, preferred_username: user.username, picture: user.avatar_url || undefined, updated_at: Math.floor(new Date(user.updated_at).getTime() / 1000) });
   if (scopes.includes('email') && user.email) Object.assign(out, { email: user.email, email_verified: true });
+  // Always present with the scope, null for non-staff, so apps never guess from absence.
+  if (scopes.includes('admin')) out.admin_level = user.admin_level ?? null;
   return out;
 }
 
@@ -206,7 +210,7 @@ export async function oauthRoutes(app) {
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: ['ES256'],
       token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
-      claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'updated_at', 'email', 'email_verified', 'auth_time', 'amr', 'nonce'],
+      claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'updated_at', 'email', 'email_verified', 'admin_level', 'auth_time', 'amr', 'nonce'],
       authorization_response_iss_parameter_supported: true,
       request_parameter_supported: false,
       request_uri_parameter_supported: false,

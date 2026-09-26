@@ -423,3 +423,51 @@ test('editing one thing on an app leaves the rest alone', { skip }, async () => 
   assert.deepEqual(after.resource_scopes, ['deltatime']);
   assert.deepEqual(after.post_logout_redirect_uris, ['https://blog.example.com/']);
 });
+
+test('admin levels: only admin tools see them, changes are audited, and the last owner stays', { skip }, async () => {
+  const tool = await makeClient({ name: 'Telescreen AL', first_party: true, scopes: ['openid', 'profile', 'admin', 'offline_access'] });
+  const site = await makeClient({ name: 'Plain site AL' });
+  const { b } = await login('alice@example.com');
+  const alice = (await pool.query("SELECT id FROM users WHERE email = 'alice@example.com'")).rows[0].id;
+  const exchange = async (client, scope) => {
+    const flow = authorizeUrl(client, { scope });
+    const res = await app.inject({ method: 'POST', url: '/oauth/token', ...form({ grant_type: 'authorization_code', code: codeFrom(await approve(b, flow.url)), redirect_uri: 'https://blog.example.com/callback', code_verifier: flow.verifier, client_id: client.id, client_secret: tool.client.id === client.id ? tool.client_secret : site.client_secret }) });
+    assert.equal(res.statusCode, 200, res.body);
+    return res.json();
+  };
+  const userinfo = token => app.inject({ method: 'GET', url: '/oauth/userinfo', headers: { authorization: `Bearer ${token}` } }).then(r => r.json());
+  const setLevel = (id, level) => app.inject({ method: 'POST', url: `/admin/v1/users/${id}/admin-level`, headers: ADMIN, payload: { level } });
+
+  // Non-staff: the claim is there and null, never missing.
+  let t = await exchange(tool.client, 'openid profile admin offline_access');
+  assert.equal((await userinfo(t.access_token)).admin_level, null);
+  const [, payload] = t.id_token.split('.');
+  assert.equal(JSON.parse(Buffer.from(payload, 'base64url')).admin_level, null);
+
+  // A normal site can't ask for it at all.
+  const denied = await b.get(authorizeUrl(site.client, { scope: 'openid admin' }).url);
+  assert.equal(new URL(denied.headers.location).searchParams.get('error'), 'invalid_scope');
+
+  assert.equal((await setLevel(alice, 'superuser')).statusCode, 400);
+  const set = await setLevel(alice, 'owner');
+  assert.equal(set.statusCode, 200, set.body);
+  assert.equal(set.json().user.admin_level, 'owner');
+  // The change signed her out of admin tools, so the old token no longer works.
+  assert.equal((await app.inject({ method: 'GET', url: '/oauth/userinfo', headers: { authorization: `Bearer ${t.access_token}` } })).statusCode, 401);
+  t = await exchange(tool.client, 'openid profile admin offline_access');
+  assert.equal((await userinfo(t.access_token)).admin_level, 'owner');
+  // Other sites' tokens are untouched by a level change.
+  const siteToken = await exchange(site.client, 'openid profile');
+  assert.equal((await userinfo(siteToken.access_token)).admin_level, undefined);
+
+  // The only owner can't be demoted; with a second owner she can.
+  assert.equal((await setLevel(alice, 'admin')).statusCode, 409);
+  const bob = (await pool.query("INSERT INTO users (username, display_name, email) VALUES ('bob_owner', 'Bob', 'bob-owner@example.com') RETURNING id")).rows[0].id;
+  assert.equal((await setLevel(bob, 'owner')).statusCode, 200);
+  assert.equal((await setLevel(alice, 'viewer')).json().user.admin_level, 'viewer');
+  assert.equal((await userinfo(siteToken.access_token)).sub, alice, 'site token survived the change');
+  const log = (await pool.query("SELECT detail FROM audit_log WHERE action = 'admin.level_changed' AND user_id = $1 ORDER BY at", [alice])).rows.map(r => r.detail);
+  assert.deepEqual(log.map(d => [d.before, d.after]), [[null, 'owner'], ['owner', 'viewer']]);
+  const listed = await app.inject({ method: 'GET', url: `/admin/v1/users/${alice}`, headers: ADMIN });
+  assert.equal(listed.json().user.admin_level, 'viewer');
+});
