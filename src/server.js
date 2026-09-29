@@ -68,7 +68,15 @@ export async function buildApp(options = {}) {
   app.get('/health', async () => { await pool.query('SELECT 1'); return { ok: true }; });
   app.get('/', async (_request, reply) => reply.redirect('/account'));
 
-  await app.register(staticFiles, { root: fileURLToPath(new URL('../public', import.meta.url)), index: false, wildcard: false, cacheControl: false, setHeaders: res => res.setHeader('Cache-Control', 'public, max-age=3600') });
+  await app.register(staticFiles, {
+    root: fileURLToPath(new URL('../public', import.meta.url)),
+    index: false,
+    wildcard: false,
+    cacheControl: false,
+    // @fastify/static v10 passes Fastify's reply here, rather than Node's
+    // ServerResponse. Calling setHeader made every static asset fail as a 500.
+    setHeaders: reply => reply.header('Cache-Control', 'public, max-age=3600'),
+  });
   await app.register(oauthRoutes);
   await app.register(loginRoutes);
   await app.register(accountRoutes);
