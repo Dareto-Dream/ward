@@ -35,7 +35,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .notice { margin: 0; padding: 0.75rem 1rem; border-radius: var(--radii-default); border: 1px solid var(--border); background: var(--elevated); }
 .notice.error { border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.1); color: #fecaca; }
 .notice.ok { border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.1); color: #bbf7d0; }
-.notice.info { border-color: rgba(63, 136, 197, 0.45); background: rgba(63, 136, 197, 0.08); color: #bfdbfe; }
+.notice.info { border-color: rgba(54, 143, 217, 0.45); background: rgba(54, 143, 217, 0.08); color: #bfdbfe; }
 
 .providers { display: grid; gap: var(--spacing-1); }
 .provider { display: block; text-align: center; padding: 0.75rem 1rem; border-radius: var(--radii-default); border: 1px solid var(--border); color: var(--text); text-decoration: none; font-weight: var(--font-weight-semibold); background: var(--elevated); transition: border-color var(--transition-fast), background var(--transition-fast); }
