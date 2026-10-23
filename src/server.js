@@ -33,8 +33,10 @@ export async function buildApp(options = {}) {
         imgSrc: ["'self'", 'data:', ...AVATARS],
         connectSrc: ["'none'"],
         // Forms post here, and /oauth/authorize then redirects to a client —
-        // Chrome applies form-action to that redirect, so leave it open to https.
-        formAction: ["'self'", 'https:', ...(config.production ? [] : ['http://localhost:*', 'http://127.0.0.1:*'])],
+        // Chrome applies form-action to that redirect, so leave it open to https, and to loopback in production too:
+        // desktop tools (Git Credential Manager) catch the code on http://127.0.0.1:<port>. Client redirect URIs are
+        // still matched exactly, so this only decides what the browser is allowed to follow.
+        formAction: ["'self'", 'https:', 'http://localhost:*', 'http://127.0.0.1:*'],
         frameAncestors: ["'none'"],
         baseUri: ["'none'"],
         upgradeInsecureRequests: config.production ? [] : null,
